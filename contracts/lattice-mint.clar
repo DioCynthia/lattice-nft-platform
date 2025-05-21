@@ -110,36 +110,6 @@
   (default-to (list) (map-get? principal-nfts owner))
 )
 
-;; Add NFT to a principal's ownership list
-(define-private (add-nft-to-principal (owner principal) (nft-id {collection-id: uint, token-index: uint}))
-  (let (
-    (current-nfts (get-principal-nfts owner))
-  )
-    (map-set principal-nfts
-      owner
-      (append current-nfts nft-id)
-    )
-  )
-)
-
-;; Remove NFT from a principal's ownership list
-(define-private (remove-nft-from-principal (owner principal) (nft-id {collection-id: uint, token-index: uint}))
-  (let (
-    (current-nfts (get-principal-nfts owner))
-    (filtered-nfts (filter 
-      (lambda (owned-nft) 
-        (not (and 
-          (is-eq (get collection-id owned-nft) (get collection-id nft-id))
-          (is-eq (get token-index owned-nft) (get token-index nft-id))
-        )))
-      current-nfts))
-  )
-    (map-set principal-nfts
-      owner
-      filtered-nfts
-    )
-  )
-)
 
 ;; Calculate platform fee amount
 (define-private (calculate-platform-fee (amount uint))
@@ -278,82 +248,6 @@
   )
 )
 
-;; Mint a new NFT
-(define-public (mint-nft (collection-id uint) (seed uint))
-  (let (
-    (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
-    (current-supply (get current-supply collection))
-    (max-supply (get max-supply collection))
-    (mint-price (get mint-price collection))
-    (is-open (get is-open collection))
-    (new-token-index (+ current-supply u1))
-    (nft-id {collection-id: collection-id, token-index: new-token-index})
-    (metadata-uri (concat (get metadata-uri collection) (concat "/" (to-string new-token-index))))
-  )
-    ;; Validations
-    (asserts! is-open ERR-COLLECTION-CLOSED)
-    (asserts! (< current-supply max-supply) ERR-COLLECTION-LIMIT-REACHED)
-    (asserts! (>= (stx-get-balance tx-sender) mint-price) ERR-INSUFFICIENT-PAYMENT)
-    
-    ;; Payment processing
-    (try! (stx-transfer? mint-price tx-sender (get creator collection)))
-    
-    ;; Mint NFT
-    (try! (nft-mint? lattice-nft nft-id tx-sender))
-    
-    ;; Update collection supply
-    (map-set collections 
-      collection-id
-      (merge collection {current-supply: new-token-index})
-    )
-    
-    ;; Record NFT details
-    (map-set nfts
-      nft-id
-      {
-        owner: tx-sender,
-        seed: seed,
-        minted-at: block-height,
-        metadata-uri: metadata-uri
-      }
-    )
-    
-    ;; Update owner's NFT list
-    (add-nft-to-principal tx-sender nft-id)
-    
-    (ok nft-id)
-  )
-)
-
-;; Transfer NFT to another principal
-(define-public (transfer-nft (collection-id uint) (token-index uint) (recipient principal))
-  (let (
-    (nft-id {collection-id: collection-id, token-index: token-index})
-    (nft-data (unwrap! (map-get? nfts nft-id) ERR-NFT-NOT-FOUND))
-  )
-    ;; Verify ownership
-    (asserts! (is-eq (get owner nft-data) tx-sender) ERR-NOT-OWNER)
-    
-    ;; Remove any active listing
-    (map-delete listings nft-id)
-    
-    ;; Transfer NFT
-    (try! (nft-transfer? lattice-nft nft-id tx-sender recipient))
-    
-    ;; Update NFT ownership record
-    (map-set nfts
-      nft-id
-      (merge nft-data {owner: recipient})
-    )
-    
-    ;; Update ownership lists
-    (remove-nft-from-principal tx-sender nft-id)
-    (add-nft-to-principal recipient nft-id)
-    
-    (ok true)
-  )
-)
-
 ;; List NFT for sale
 (define-public (list-nft-for-sale (collection-id uint) (token-index uint) (price uint))
   (let (
@@ -394,47 +288,6 @@
     
     ;; Remove listing
     (map-delete listings nft-id)
-    
-    (ok true)
-  )
-)
-
-;; Buy a listed NFT
-(define-public (buy-nft (collection-id uint) (token-index uint))
-  (let (
-    (nft-id {collection-id: collection-id, token-index: token-index})
-    (listing (unwrap! (map-get? listings nft-id) ERR-LISTING-NOT-FOUND))
-    (collection (unwrap! (map-get? collections collection-id) ERR-COLLECTION-NOT-FOUND))
-    (nft-data (unwrap! (map-get? nfts nft-id) ERR-NFT-NOT-FOUND))
-    (seller (get seller listing))
-    (price (get price listing))
-    (creator (get creator collection))
-    (royalty-bps (get royalty-bps collection))
-  )
-    ;; Verify buyer is not the seller
-    (asserts! (not (is-eq tx-sender seller)) ERR-NOT-AUTHORIZED)
-    
-    ;; Check if buyer has enough STX
-    (asserts! (>= (stx-get-balance tx-sender) price) ERR-INSUFFICIENT-PAYMENT)
-    
-    ;; Handle payment with royalties
-    (try! (transfer-stx-with-royalty price seller creator royalty-bps))
-    
-    ;; Transfer NFT
-    (try! (nft-transfer? lattice-nft nft-id seller tx-sender))
-    
-    ;; Update NFT ownership
-    (map-set nfts
-      nft-id
-      (merge nft-data {owner: tx-sender})
-    )
-    
-    ;; Remove listing
-    (map-delete listings nft-id)
-    
-    ;; Update ownership lists
-    (remove-nft-from-principal seller nft-id)
-    (add-nft-to-principal tx-sender nft-id)
     
     (ok true)
   )
